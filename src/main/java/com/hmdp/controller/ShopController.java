@@ -7,6 +7,7 @@ import com.hmdp.dto.Result;
 import com.hmdp.entity.Shop;
 import com.hmdp.service.IShopService;
 import com.hmdp.utils.SystemConstants;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
 import javax.annotation.Resource;
@@ -23,7 +24,7 @@ import javax.annotation.Resource;
 @RequestMapping("/shop")
 public class ShopController {
 
-    @Resource
+    @Autowired
     public IShopService shopService;
 
     /**
