@@ -23,15 +23,15 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.PostConstruct;
+import javax.annotation.PreDestroy;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * <p>
@@ -72,20 +72,39 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 //    private final BlockingQueue<VoucherOrder> orderTasks = new ArrayBlockingQueue<>(1024 * 1024);
 
     //线程池
-    private static final ExecutorService SECKILL_ORDER_EXECUTOR = Executors.newSingleThreadExecutor();
+    private final ExecutorService seckillOrderExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread thread = new Thread(r, "seckill-order-handler");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private volatile boolean running = true;
 
     //在类初始化的时候就开始执行
     @PostConstruct
     public void init() {
-        SECKILL_ORDER_EXECUTOR.submit(new VoucherOrderHandler());
+        running = true;
+        seckillOrderExecutor.submit(new VoucherOrderHandler());
 
+    }
+
+    @PreDestroy
+    public void destroy() {
+        running = false;
+        seckillOrderExecutor.shutdownNow();
+        try {
+            if (!seckillOrderExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                log.warn("订单处理线程未在限定时间内停止");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private class VoucherOrderHandler implements Runnable {
         String queueName = "stream.orders";
         @Override
         public void run() {
-            while (true) {
+            while (running && !Thread.currentThread().isInterrupted()) {
                 try {
                     //1.获取消息队列中的订单信息
                     List<MapRecord<String, Object, Object>> list = stringRedisTemplate.opsForStream().read(
@@ -107,6 +126,10 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
                     //5.ACK确认
                     stringRedisTemplate.opsForStream().acknowledge(queueName,"g1",mapRecord.getId());
                 } catch (Exception e) {
+                    if (!running || Thread.currentThread().isInterrupted()) {
+                        log.info("订单处理线程正在停止");
+                        break;
+                    }
                     log.error("处理pending-list订单异常", e);
                     handlePendingList();
                 }
@@ -117,7 +140,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
          * 处理待处理订单
          */
         private void handlePendingList() {
-            while (true) {
+            while (running && !Thread.currentThread().isInterrupted()) {
                 try {
                     //1.获取pending-list中的订单信息
                     List<MapRecord<String, Object, Object>> list = stringRedisTemplate.opsForStream().read(
@@ -139,6 +162,10 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
                     //5.ACK确认
                     stringRedisTemplate.opsForStream().acknowledge(queueName,"g1",mapRecord.getId());
                 } catch (Exception e) {
+                    if (!running || Thread.currentThread().isInterrupted()) {
+                        log.info("订单pending-list处理线程正在停止");
+                        break;
+                    }
                     log.error("处理订单异常", e);
                 }
             }
